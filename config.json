@@ -1,0 +1,9 @@
+{
+  "target_locations": [],
+  "check_interval_minutes": 60,
+  "telegram": {
+    "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+    "chat_id": "YOUR_TELEGRAM_CHAT_ID"
+  },
+  "url": "https://www.jobsatamazon.co.uk/app#/jobSearch"
+}

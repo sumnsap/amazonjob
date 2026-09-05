@@ -25,8 +25,12 @@ def load_config(config_path: Path) -> dict:
     if not config_path.exists():
         logging.warning(f"Config file not found at {config_path}. Using environment defaults.")
         return {}
-    with open(config_path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logging.error(f"Error loading config: {e}")
+        return {}
 
 def load_seen_jobs() -> set:
     if SEEN_JOBS_PATH.exists():
@@ -48,7 +52,16 @@ def save_seen_jobs(seen_jobs: set):
 async def scrape_jobs(url: str) -> list:
     jobs = []
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        # Linux / GitHub Actions flags
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu"
+            ]
+        )
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={"width": 1280, "height": 800}
@@ -56,8 +69,9 @@ async def scrape_jobs(url: str) -> list:
         page = await context.new_page()
         logging.info(f"Navigating to {url}...")
         try:
-            await page.goto(url, wait_until="networkidle", timeout=60000)
-            await page.wait_for_timeout(4000)
+            # Use domcontentloaded for fast reliable loading on Linux cloud runners
+            await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            await page.wait_for_timeout(5000)
             
             body_text = await page.evaluate("document.body.innerText")
             lines = [line.strip() for line in body_text.split("\n") if line.strip()]
@@ -118,8 +132,6 @@ async def check_once(config: dict, notifier: TelegramNotifier):
     
     for job in all_jobs:
         job_loc = job.get("location", "").lower()
-        
-        # If target_locations is empty, match EVERYTHING!
         if not target_locations:
             location_matched = True
         else:
@@ -135,8 +147,6 @@ async def check_once(config: dict, notifier: TelegramNotifier):
                 notifier.send_job_alert(job, url)
                 seen_jobs.add(job_id)
                 new_jobs_count += 1
-            else:
-                logging.debug(f"Already seen job: {job_id}")
 
     save_seen_jobs(seen_jobs)
     logging.info(f"Check complete. {new_jobs_count} new alerts sent.")
@@ -161,14 +171,17 @@ async def main():
 
     interval_minutes = config.get("check_interval_minutes", 60)
 
-    if args.single_run or os.environ.get("GITHUB_ACTIONS"):
-        await check_once(config, notifier)
-    else:
-        logging.info(f"Starting Amazon UK Job Notifier daemon (Interval: {interval_minutes} minutes)...")
-        while True:
+    try:
+        if args.single_run or os.environ.get("GITHUB_ACTIONS"):
             await check_once(config, notifier)
-            logging.info(f"Sleeping for {interval_minutes} minutes...")
-            await asyncio.sleep(interval_minutes * 60)
+        else:
+            logging.info(f"Starting Amazon UK Job Notifier daemon (Interval: {interval_minutes} minutes)...")
+            while True:
+                await check_once(config, notifier)
+                logging.info(f"Sleeping for {interval_minutes} minutes...")
+                await asyncio.sleep(interval_minutes * 60)
+    except Exception as e:
+        logging.error(f"Execution finished with error: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
